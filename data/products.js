@@ -15,6 +15,37 @@ export const products = [
     ]
   },
   {
+    id: "f8b7f3e3-3b0e-4e3d-8e4c-6f8f1d0f2f6d",
+    image: "images/products/backpack.jpg",
+    name: "Waterproof Backpack - Black",
+    rating: {
+      stars: 4.5,
+      count: 60
+    },
+    priceCents: 2999,
+    keywords: [
+      "backpack",
+      "waterproof",
+      "bags",
+    ]
+  },
+
+  {
+    id: "b7f3e3-3b0e-4e3d-8e4c-6f8f1d0f2f6d",
+    image: "images/products/umbrella.jpg",
+    name: "Windproof Travel Umbrella - Black",
+    rating: {
+      stars: 4.5,
+      count: 90
+    },
+    priceCents: 1999,
+    keywords: [
+      "umbrella",
+      "windproof",
+      "travel",
+    ]
+  },
+  {
     id: "15b6fc6f-327a-4ec4-896f-486349e85a3d",
     image: "images/products/intermediate-composite-basketball.jpg",
     name: "Intermediate Size Basketball",
