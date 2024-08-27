@@ -49,9 +49,6 @@ export function addToCart(productId) {
 
 }
 
-export function formatCurrency(amount) {
-  return `$${(amount / 100).toFixed(2)}`;
-}
 
 export function deleteCartItem(productId){
   const newCart = [];

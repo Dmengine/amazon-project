@@ -1,4 +1,5 @@
-import {cart, formatCurrency, deleteCartItem} from '../data/cart.js';
+import {cart, deleteCartItem} from '../data/cart.js';
+import {formatCurrency} from './utils/money.js';
 import {products} from '../data/products.js';
 
 let checkoutSummaryHTML = '';
@@ -31,7 +32,7 @@ cart.forEach((cartItem) => {
               ${matchingProduct.name}
             </div>
             <div class="product-price">
-              formatCurrency(${matchingProduct.priceCents})
+              $${formatCurrency(matchingProduct.priceCents)}
             </div>
             <div class="product-quantity">
               <span>
