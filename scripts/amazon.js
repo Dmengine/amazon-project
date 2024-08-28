@@ -1,4 +1,4 @@
-import {cart, addToCart} from '../data/cart.js';
+import {cart, addToCart, calculateCartQuantity} from '../data/cart.js';
 import { formatCurrency } from './utils/money.js';
 import {products} from '../data/products.js';
 
@@ -65,19 +65,14 @@ products.forEach( (product) => {
 
 
 export function updateCartQuantity(){
-  let cardQuantity = 0;
-
-  cart.forEach((cartItem) => {
-    cardQuantity += cartItem.quantity;
-  })
-
+  let cardQuantity = calculateCartQuantity()
   document.querySelector('.js-cart-quantity').
         innerHTML = cardQuantity;
 
 }
 
 
-
+updateCartQuantity();
 
 
 document.querySelector('.js-products-grid').innerHTML = productsHTML;
