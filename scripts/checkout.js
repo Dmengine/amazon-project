@@ -1,13 +1,18 @@
 import {cart, deleteCartItem, calculateCartQuantity, updateQuantity} from '../data/cart.js';
 import {formatCurrency} from './utils/money.js';
 import {products} from '../data/products.js';
+import dayjs from 'https://unpkg.com/dayjs@1.11.10/esm/index.js';
+import { deliveryOptions } from '../data/deliveryOptions.js';
+
+
+// const today = dayjs();
+// const deliveryOption = today.add(7, 'days');
+// console.log(deliveryOption.format('dddd, MMMM D'))
 
 let checkoutSummaryHTML = '';
 
 cart.forEach((cartItem) => {
-
   const productId = cartItem.productId;
-
 
   let matchingProduct;
 
@@ -17,12 +22,27 @@ cart.forEach((cartItem) => {
     }
   });
 
+  const deliveryOptionId = cartItem.deliveryOptionsId;
+  // console.log(deliveryOptionId);
+
+  let matchingDeliveryOptionId;
+
+  deliveryOptions.forEach((deliveryOption) => {
+    if(deliveryOption.id === deliveryOptionId){
+      matchingDeliveryOptionId = deliveryOption;
+    }
+  });
+
+  const today = dayjs();
+  const deliveryDay = today.add(matchingDeliveryOptionId.deliveryDays, 'days');
+  const dateString = deliveryDay.format('dddd, MMMM D');
+
   checkoutSummaryHTML +=`
     <div class="cart-item-container is-editing-quantity js-cart-item-container-${matchingProduct.id}">
         <div class="delivery-date">
-          Delivery date: Tuesday, June 21
+          Delivery date: ${dateString}
         </div>
-
+    </div>
         <div class="cart-item-details-grid">
           <img class="product-image"
             src="${matchingProduct.image}">
@@ -54,50 +74,12 @@ cart.forEach((cartItem) => {
               </span>
             </div>
           </div>
-
+            
           <div class="delivery-options">
             <div class="delivery-options-title">
               Choose a delivery option:
             </div>
-            <div class="delivery-option">
-              <input type="radio" checked
-                class="delivery-option-input"
-                name="delivery-option-${matchingProduct.id}">
-              <div>
-                <div class="delivery-option-date">
-                  Tuesday, June 21
-                </div>
-                <div class="delivery-option-price">
-                  FREE Shipping
-                </div>
-              </div>
-            </div>
-            <div class="delivery-option">
-              <input type="radio"
-                class="delivery-option-input"
-                name="delivery-option-${matchingProduct.id}">
-              <div>
-                <div class="delivery-option-date">
-                  Wednesday, June 15
-                </div>
-                <div class="delivery-option-price">
-                  $4.99 - Shipping
-                </div>
-              </div>
-            </div>
-            <div class="delivery-option">
-              <input type="radio"
-                class="delivery-option-input"
-                name="delivery-option-${matchingProduct.id}">
-              <div>
-                <div class="delivery-option-date">
-                  Monday, June 13
-                </div>
-                <div class="delivery-option-price">
-                  $9.99 - Shipping
-                </div>
-              </div>
-            </div>
+            ${deliveryOptionHTML(matchingProduct, cartItem)}
           </div>
         </div>
       </div>
@@ -166,5 +148,41 @@ document.querySelectorAll('.js-delete-quantity').
 
       updateCartQuantity();
 
-    })
-  })
+    });
+  });
+
+
+  function deliveryOptionHTML(matchingProduct, cartItem){
+    let html = '';
+
+    deliveryOptions.forEach((deliveryOption) => {
+      const today = dayjs();
+      const deliveryDay = today.add(deliveryOption.deliveryDays, 'days');
+      const dateString = deliveryDay.format('dddd, MMMM D');
+      // console.log(dateString);
+      const priceString = 
+        deliveryOption.priceCents === 0 
+        ? 'FREE'
+        : `$${formatCurrency(deliveryOption.priceCents)} -`;
+
+        const isChecked = cartItem.deliveryOptionsId === deliveryOption.id;
+
+      html +=`
+            <div class="delivery-option">
+              <input type="radio" checked
+                ${isChecked ? 'checked' : ''}
+                class="delivery-option-input"
+                name="delivery-option-${matchingProduct.id}">
+              <div>
+                <div class="delivery-option-date">
+                  ${dateString}
+                </div>
+                <div class="delivery-option-price">
+                  ${priceString} Shipping
+                </div>
+              </div>
+            </div>
+      `;
+    });
+    return html;
+  }

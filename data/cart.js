@@ -16,11 +16,18 @@ if (storedCart && storedCart !== 'undefined') {
     {
       productId: "e43638ce-6aa0-4b85-b27f-e1d07eb678c6",
       quantity: 2,
+      deliveryOptionsId: '1',
     },
     {
       productId: "f8b7f3e3-3b0e-4e3d-8e4c-6f8f1d0f2f6d",
-      quantity: 4,
+      quantity: 2,
+      deliveryOptionsId: '2',
     },
+    // },{
+    //   productId: "b7f3e3-3b0e-4e3d-8e4c-6f8f1d0f2f6d",
+    //   quantity: 3,
+    //   deliveryOptionsId: 1,
+    // },
   ];
 }
 
@@ -63,6 +70,7 @@ export function addToCart(productId) {
     cart.push({
       productId,
       quantity,
+      deliveryOptionsId: '1',
     });
   };
 
@@ -73,7 +81,7 @@ export function addToCart(productId) {
 export function deleteCartItem(productId){
   const newCart = [];
   cart.forEach((cartItem) => {
-    if (cartItem.productId !== productId) {
+    if (cartItem.productId !== productId) { 
       newCart.push(cartItem);
     }
   });
