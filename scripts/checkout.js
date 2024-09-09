@@ -1,4 +1,4 @@
-import {cart, deleteCartItem, calculateCartQuantity, updateQuantity} from '../data/cart.js';
+import {cart, deleteCartItem, calculateCartQuantity, updateQuantity, updateDeliveryOption} from '../data/cart.js';
 import {formatCurrency} from './utils/money.js';
 import {products} from '../data/products.js';
 import dayjs from 'https://unpkg.com/dayjs@1.11.10/esm/index.js';
@@ -38,11 +38,10 @@ cart.forEach((cartItem) => {
   const dateString = deliveryDay.format('dddd, MMMM D');
 
   checkoutSummaryHTML +=`
-    <div class="cart-item-container is-editing-quantity js-cart-item-container-${matchingProduct.id}">
+      <div class="cart-item-container is-editing-quantity js-cart-item-container-${matchingProduct.id}">
         <div class="delivery-date">
           Delivery date: ${dateString}
         </div>
-    </div>
         <div class="cart-item-details-grid">
           <img class="product-image"
             src="${matchingProduct.image}">
@@ -74,7 +73,6 @@ cart.forEach((cartItem) => {
               </span>
             </div>
           </div>
-            
           <div class="delivery-options">
             <div class="delivery-options-title">
               Choose a delivery option:
@@ -168,7 +166,10 @@ document.querySelectorAll('.js-delete-quantity').
         const isChecked = cartItem.deliveryOptionsId === deliveryOption.id;
 
       html +=`
-            <div class="delivery-option">
+            <div class="delivery-option js-delivery-option"
+              data-product-id = ${matchingProduct.id}
+              data-delivery-option-id = ${deliveryOption.id}
+              >
               <input type="radio" checked
                 ${isChecked ? 'checked' : ''}
                 class="delivery-option-input"
@@ -186,3 +187,10 @@ document.querySelectorAll('.js-delete-quantity').
     });
     return html;
   }
+
+document.querySelectorAll('.js-delivery-option').forEach((element)=>{
+  element.addEventListener('click', ()=> {
+    const {productId, deliveryOptionId} = element.dataset;
+    updateDeliveryOption(productId, deliveryOptionId)
+  })
+})
