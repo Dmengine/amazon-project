@@ -1,3 +1,15 @@
+export function getProduct(productId) {
+  let matchingProduct;
+
+  products.forEach((product) => {
+    if (product.id === productId) {
+      matchingProduct = product;
+    }
+  });
+
+  return matchingProduct;
+}
+
 export const products = [
   {
     id: "e43638ce-6aa0-4b85-b27f-e1d07eb678c6",
@@ -12,37 +24,6 @@ export const products = [
       "socks",
       "sports",
       "apparel"
-    ]
-  },
-  {
-    id: "f8b7f3e3-3b0e-4e3d-8e4c-6f8f1d0f2f6d",
-    image: "images/products/backpack.jpg",
-    name: "Waterproof Backpack - Black",
-    rating: {
-      stars: 4.5,
-      count: 60
-    },
-    priceCents: 2999,
-    keywords: [
-      "backpack",
-      "waterproof",
-      "bags",
-    ]
-  },
-
-  {
-    id: "b7f3e3-3b0e-4e3d-8e4c-6f8f1d0f2f6d",
-    image: "images/products/umbrella.jpg",
-    name: "Windproof Travel Umbrella - Black",
-    rating: {
-      stars: 4.5,
-      count: 90
-    },
-    priceCents: 1999,
-    keywords: [
-      "umbrella",
-      "windproof",
-      "travel",
     ]
   },
   {
