@@ -1,22 +1,25 @@
 import {formatCurrency} from '../scripts/utils/money.js';
 
 export function getProduct(productId) {
-  for (const product of products) {
+  let matchingProduct;
+
+  products.forEach((product) => {
     if (product.id === productId) {
-      return product;
+      matchingProduct = product;
     }
-  }
-  return undefined; // Explicitly return undefined if no product is found
+  });
+
+  return matchingProduct;
 }
 
-class Products {
+class Product {
   id;
   image;
   name;
   rating;
   priceCents;
 
-  constructor(productDetails){
+  constructor(productDetails) {
     this.id = productDetails.id;
     this.image = productDetails.image;
     this.name = productDetails.name;
@@ -24,16 +27,67 @@ class Products {
     this.priceCents = productDetails.priceCents;
   }
 
-  getStarUrl(){
+  getStarsUrl() {
     return `images/ratings/rating-${this.rating.stars * 10}.png`;
   }
 
-  getPrice(){
+  getPrice() {
     return `$${formatCurrency(this.priceCents)}`;
   }
 
+  extraInfoHTML() {
+    return '';
+  }
 }
 
+class Clothing extends Product {
+  sizeChartLink;
+
+  constructor(productDetails) {
+    super(productDetails);
+    this.sizeChartLink = productDetails.sizeChartLink;
+  }
+
+  extraInfoHTML() {
+    // super.extraInfoHTML();
+    return `
+      <a href="${this.sizeChartLink}" target="_blank">
+        Size chart
+      </a>
+    `;
+  }
+}
+
+/*
+const date = new Date();
+console.log(date);
+console.log(date.toLocaleTimeString());
+*/
+
+/*
+console.log(this);
+
+const object2 = {
+  a: 2,
+  b: this.a
+};
+*/
+
+/*
+function logThis() {
+  console.log(this);
+}
+logThis();
+logThis.call('hello');
+
+this
+const object3 = {
+  method: () => {
+    console.log(this);
+  }
+};
+object3.method();
+*/
 
 export const products = [
   {
@@ -695,5 +749,8 @@ export const products = [
     ]
   }
 ].map((productDetails) => {
-  return new Products(productDetails);
+  if (productDetails.type === 'clothing') {
+    return new Clothing(productDetails);
+  }
+  return new Product(productDetails);
 });
