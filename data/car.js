@@ -90,7 +90,7 @@ car1.go();
 car1.go();
 car1.brake();
 car1.displayInfo();
-car1.openTrunk();
+// car1.openTrunk();
 car1.displayInfo();
 
 car2.displayInfo();
@@ -100,7 +100,7 @@ car2.brake();
 car2.displayInfo();
 
 // Trunk should open since the car is not moving.
-car2.openTrunk();
+// car2.openTrunk();
 // Car should not go since the trunk is open.
 car2.go();
 car2.displayInfo();
