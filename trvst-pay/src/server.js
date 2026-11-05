@@ -102,6 +102,7 @@ export function createApp(config = loadConfig()) {
       const paylink = service.applyProviderUpdate({
         provider: 'globalpayments', providerId: update.linkId, reference: update.reference,
         status: update.status, transactionId: update.transactionId,
+        amount: update.amount, currency: update.currency,
       });
       json(res, 200, { received: true, matched: Boolean(paylink) });
     }],
@@ -158,7 +159,12 @@ export function createApp(config = loadConfig()) {
   }
 
   const server = http.createServer(async (req, res) => {
-    const { pathname } = new URL(req.url, 'http://x');
+    let pathname;
+    try {
+      ({ pathname } = new URL(req.url, 'http://x'));
+    } catch {
+      return json(res, 400, { error: 'bad request target' });
+    }
     if (pathname.startsWith('/api/') || /^\/pay\/[\w-]+\/status$/.test(pathname)) cors(req, res);
     try {
       for (const [method, pattern, handler] of routes) {
@@ -167,7 +173,7 @@ export function createApp(config = loadConfig()) {
       }
       json(res, 404, { error: 'not found' });
     } catch (error) {
-      if (error instanceof ValidationError) return json(res, 400, { error: error.message });
+      if (error instanceof ValidationError) return json(res, error.status, { error: error.message });
       if (error instanceof ProviderError) {
         console.error('[trvst-pay]', error.message);
         return json(res, 502, { error: error.message });

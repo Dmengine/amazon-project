@@ -62,6 +62,17 @@ export function payPage(p, error, qrSvgMarkup) {
     return layout('Link unavailable', `<div class="card">${summary(p)}<hr>
       <p class="bad">This payment link has ${esc(p.status)}.</p><p class="muted">Ask the merchant for a new link.</p></div>`);
   }
+  const pending = p.attempts.find((a) => a.status === 'pending');
+  if (pending) {
+    const label = pending.method === 'card' ? 'Continue paying by card' : 'Continue paying by bank';
+    return layout(`Pay ${formatAmount(p.amount, p.currency)}`, `<div class="card">${summary(p)}
+      ${error ? `<div class="error" role="alert">${esc(error)}</div>` : ''}
+      <hr><p>A ${pending.method} payment has already been started for this link.</p>
+      <form method="post" action="/pay/${esc(p.id)}/${esc(pending.method)}">
+        <button class="primary" type="submit">${label}</button>
+      </form>
+      <p class="muted">To pay a different way, ask the merchant for a new link.</p></div>`);
+  }
   const card = p.methods.includes('card') ? `
     <form method="post" action="/pay/${esc(p.id)}/card">
       <button class="primary" type="submit">Pay by card<small>Visa, Mastercard, Amex · secured by Global Payments</small></button>

@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import crypto from 'node:crypto';
+import net from 'node:net';
 import { createApp } from '../src/server.js';
 import { PaylinkStore } from '../src/store.js';
 import { createGlobalPayments } from '../src/providers/globalPayments.js';
@@ -234,4 +235,160 @@ test('status endpoint is readable from the storefront origin', async (t) => {
   const link = app.service.create({ amount: 100, currency: 'GBP', reference: 'ST-1' });
   const res = await fetch(`${app.url}/pay/${link.id}/status`, { headers: { Origin: 'http://shop.test' } });
   assert.equal(res.headers.get('access-control-allow-origin'), 'http://shop.test');
+});
+
+// --- Regression tests for review findings ---
+
+function countingProviders() {
+  const calls = { card: 0, bank: 0 };
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  return {
+    calls,
+    release: () => release(),
+    providers: {
+      globalPayments: {
+        ...createGlobalPayments({ appKey: 'k' }),
+        createLink: async (p) => { calls.card++; await gate; return { providerId: `LNK_${calls.card}`, url: `https://gp/${calls.card}` }; },
+      },
+      openpayd: {
+        ...createOpenPayd({}),
+        createPayIn: async () => { calls.bank++; return { providerId: `PI_${calls.bank}`, url: `https://bank/${calls.bank}` }; },
+      },
+    },
+  };
+}
+
+test('concurrent starts for one paylink create a single provider session', async () => {
+  const fake = countingProviders();
+  const { service } = createApp(baseConfig({ providers: fake.providers }));
+  const link = service.create({ amount: 100, currency: 'GBP', reference: 'CC-1' });
+  const both = Promise.all([service.startPayment(link.id, 'card'), service.startPayment(link.id, 'card')]);
+  fake.release();
+  const [a, b] = await both;
+  assert.equal(fake.calls.card, 1);
+  assert.equal(a, b);
+  assert.equal(service.get(link.id).attempts.length, 1);
+});
+
+test('only one payable session per paylink: switching method while pending is refused', async (t) => {
+  const fake = countingProviders();
+  fake.release();
+  const app = await startApp({ providers: fake.providers });
+  t.after(app.close);
+  const link = app.service.create({ amount: 100, currency: 'GBP', reference: 'SW-1' });
+  await app.service.startPayment(link.id, 'card');
+  await assert.rejects(app.service.startPayment(link.id, 'bank'), (e) => e.status === 409);
+  assert.equal(fake.calls.bank, 0);
+
+  const page = await (await fetch(`${app.url}/pay/${link.id}`)).text();
+  assert.match(page, /Continue paying by card/);
+  assert.doesNotMatch(page, /Pay by bank/);
+
+  // Once the card attempt has failed the payer may choose again.
+  app.service.applyProviderUpdate({ provider: 'globalpayments', providerId: 'LNK_1', status: 'failed' });
+  assert.equal(await app.service.startPayment(link.id, 'bank'), 'https://bank/1');
+});
+
+test('provider events must correlate to the recorded session', async () => {
+  const fake = countingProviders();
+  fake.release();
+  const { service } = createApp(baseConfig({ providers: fake.providers }));
+  const link = service.create({ amount: 1234, currency: 'EUR', reference: 'COR-1' });
+  await service.startPayment(link.id, 'card');
+
+  // A different provider ID with the same reference must not settle this link.
+  assert.equal(service.applyProviderUpdate({ provider: 'globalpayments', providerId: 'LNK_OTHER', reference: 'COR-1', status: 'paid' }), null);
+  // No provider ID: reference fallback needs amount and currency to match.
+  assert.equal(service.applyProviderUpdate({ provider: 'globalpayments', reference: 'COR-1', amount: 1, currency: 'EUR', status: 'paid' }), null);
+  assert.equal(service.applyProviderUpdate({ provider: 'openpayd', reference: 'COR-1', amount: 1234, currency: 'EUR', status: 'paid' }), null, 'no attempt with that provider');
+  assert.equal(service.get(link.id).status, 'open');
+  service.applyProviderUpdate({ provider: 'globalpayments', reference: 'COR-1', amount: 1234, currency: 'eur', status: 'paid' });
+  assert.equal(service.get(link.id).status, 'paid');
+});
+
+test('a confirmed payment is recorded even after the link expired locally', async () => {
+  let now = new Date('2026-01-01T00:00:00Z');
+  const fake = countingProviders();
+  fake.release();
+  const { service } = createApp(baseConfig({ providers: fake.providers }));
+  service.now = () => now;
+  const link = service.create({ amount: 100, currency: 'GBP', reference: 'LATE-1', expiresInHours: 1 });
+  await service.startPayment(link.id, 'card');
+  now = new Date('2026-01-01T02:00:00Z');
+  assert.equal(service.get(link.id).status, 'expired');
+  service.applyProviderUpdate({ provider: 'globalpayments', providerId: 'LNK_1', status: 'paid' });
+  const after = service.get(link.id);
+  assert.equal(after.status, 'paid');
+  assert.equal(after.settledAfter, 'expired');
+  // A late "failed" for the same session doesn't undo the success.
+  service.applyProviderUpdate({ provider: 'globalpayments', providerId: 'LNK_1', status: 'failed' });
+  assert.equal(service.get(link.id).attempts[0].status, 'succeeded');
+});
+
+test('a second successful session is flagged for refund', async () => {
+  const fake = countingProviders();
+  fake.release();
+  const { service } = createApp(baseConfig({ providers: fake.providers }));
+  const link = service.create({ amount: 100, currency: 'GBP', reference: 'DUP-1' });
+  await service.startPayment(link.id, 'card');
+  service.applyProviderUpdate({ provider: 'globalpayments', providerId: 'LNK_1', status: 'failed' });
+  await service.startPayment(link.id, 'bank');
+  service.applyProviderUpdate({ provider: 'openpayd', providerId: 'PI_1', status: 'paid' });
+  // The "failed" card session later turns out to have been captured after all.
+  service.applyProviderUpdate({ provider: 'globalpayments', providerId: 'LNK_1', status: 'paid' });
+  const after = service.get(link.id);
+  assert.equal(after.paidWith, 'openpayd');
+  assert.equal(after.needsRefund, true);
+});
+
+test('cancel is refused while a provider session is open', async (t) => {
+  const fake = countingProviders();
+  fake.release();
+  const app = await startApp({ providers: fake.providers });
+  t.after(app.close);
+  const busy = app.service.create({ amount: 100, currency: 'GBP', reference: 'CAN-1' });
+  await app.service.startPayment(busy.id, 'card');
+  const res = await fetch(`${app.url}/api/paylinks/${busy.id}/cancel`, { method: 'POST', headers: auth });
+  assert.equal(res.status, 409);
+  assert.equal(app.service.get(busy.id).status, 'open');
+
+  const idle = app.service.create({ amount: 100, currency: 'GBP', reference: 'CAN-2' });
+  const ok = await fetch(`${app.url}/api/paylinks/${idle.id}/cancel`, { method: 'POST', headers: auth });
+  assert.equal((await ok.json()).status, 'cancelled');
+});
+
+test('GP preauthorisations are not treated as paid', () => {
+  const gp = createGlobalPayments({ appKey: 'k' });
+  assert.equal(gp.parseWebhook({ status: 'PREAUTHORIZED', link_data: { id: 'L' } }).status, null);
+  assert.equal(gp.parseWebhook({ status: 'CAPTURED', link_data: { id: 'L' } }).status, 'paid');
+});
+
+test('methods must be an array', async (t) => {
+  const app = await startApp();
+  t.after(app.close);
+  for (const methods of ['card', { length: 1 }, [], ['cash']]) {
+    const res = await fetch(`${app.url}/api/paylinks`, {
+      method: 'POST', headers: auth,
+      body: JSON.stringify({ amount: 100, currency: 'GBP', reference: `M-${Math.random().toString(36).slice(2, 8)}`, methods }),
+    });
+    assert.equal(res.status, 400, JSON.stringify(methods));
+  }
+});
+
+test('a malformed request target returns 400 and the server keeps running', async (t) => {
+  const app = await startApp();
+  t.after(app.close);
+  const { port } = new URL(app.url);
+  const raw = await new Promise((resolve, reject) => {
+    const socket = net.connect(Number(port), '127.0.0.1', () => {
+      socket.write('GET //[ HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n');
+    });
+    let data = '';
+    socket.on('data', (c) => { data += c; });
+    socket.on('end', () => resolve(data));
+    socket.on('error', reject);
+  });
+  assert.match(raw, /^HTTP\/1\.1 400/);
+  assert.equal((await fetch(`${app.url}/health`)).status, 200);
 });

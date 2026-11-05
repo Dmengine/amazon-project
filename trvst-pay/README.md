@@ -65,6 +65,14 @@ Send the payer the `url`. The response also includes:
 
 A paylink's status is one of `open`, `paid`, `expired` or `cancelled`.
 
+### Payment safety rules
+
+- **One payable session per link.** Once the payer has started paying by card or by bank, the payer page only offers to continue that payment. A request for the other method gets `409`. They can choose again only after that attempt fails. Concurrent requests (double-clicks, two tabs) share one provider call.
+- **Events must match a session.** A webhook only settles a link if its provider session ID matches one recorded for that link. If an event carries no session ID, it can still match on the reference, but only when the amount and currency match too.
+- **Confirmed money is never dropped.** A payment the provider confirms after the link expired or was cancelled still marks it `paid`, with `settledAfter` set to the earlier status. If a second session also succeeds, the link is flagged `needsRefund: true` and that attempt is marked `duplicate`.
+- **Cancel is refused (`409`) while the payer has a provider session open**, because that session could still take money.
+- **Card preauthorisations (`PREAUTHORIZED`) are not treated as paid.** The link stays open until capture.
+
 ## Check against the provider docs before going live
 
 The provider docs couldn't be reached when this was built, so these are configurable rather than hard-coded:

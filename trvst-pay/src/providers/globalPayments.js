@@ -82,10 +82,18 @@ export function createGlobalPayments(cfg) {
       const linkId = payload?.link_data?.id || payload?.link_id || payload?.payment_method?.id;
       const status = String(payload?.status || payload?.action?.result_code || '').toUpperCase();
       let mapped = null;
-      if (['CAPTURED', 'SUCCESS', 'COMPLETED', 'FUNDED', 'PREAUTHORIZED'].includes(status)) mapped = 'paid';
+      // PREAUTHORIZED is only a hold on the card, not money taken, so it stays pending.
+      if (['CAPTURED', 'SUCCESS', 'COMPLETED', 'FUNDED'].includes(status)) mapped = 'paid';
       else if (['DECLINED', 'FAILED', 'REJECTED'].includes(status)) mapped = 'failed';
       else if (['EXPIRED'].includes(status)) mapped = 'expired';
-      return { linkId, reference: payload?.reference, transactionId: payload?.id, status: mapped };
+      return {
+        linkId,
+        reference: payload?.reference,
+        transactionId: payload?.id,
+        amount: payload?.amount === undefined ? undefined : Number(payload.amount),
+        currency: payload?.currency,
+        status: mapped,
+      };
     },
   };
 }
