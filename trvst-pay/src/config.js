@@ -1,12 +1,14 @@
-const env = process.env;
-
 const list = (value) =>
   (value || '').split(',').map((s) => s.trim()).filter(Boolean);
 
-export function loadConfig(overrides = {}) {
+export function loadConfig(overrides = {}, env = process.env) {
   const config = {
     port: Number(env.PORT || 4242),
-    publicUrl: (env.TRVST_PAY_PUBLIC_URL || 'http://localhost:4242').replace(/\/$/, ''),
+    // On Vercel, default to the project's production domain so QR codes and provider callbacks
+    // point at the stable public address rather than a per-deployment URL.
+    publicUrl: (env.TRVST_PAY_PUBLIC_URL
+      || (env.VERCEL_PROJECT_PRODUCTION_URL && `https://${env.VERCEL_PROJECT_PRODUCTION_URL}`)
+      || 'http://localhost:4242').replace(/\/$/, ''),
     allowedOrigins: list(env.TRVST_PAY_ALLOWED_ORIGINS || 'http://localhost:5500,http://127.0.0.1:5500'),
     mode: env.TRVST_PAY_MODE === 'live' ? 'live' : 'mock',
     storeFile: env.TRVST_PAY_STORE_FILE || './data/paylinks.json',

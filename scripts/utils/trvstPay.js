@@ -1,5 +1,7 @@
-// Where the TRVST PAY service (trvst-pay/) is running.
-export const TRVST_PAY_URL = 'http://localhost:4242';
+// Where the TRVST PAY service (trvst-pay/) is running: the separate local server during
+// development, or the same origin when the storefront and service are deployed together.
+const isLocal = ['localhost', '127.0.0.1'].includes(window.location.hostname) && window.location.port !== '4242';
+export const TRVST_PAY_URL = isLocal ? 'http://localhost:4242' : window.location.origin;
 
 // Creates a TRVST PAY paylink for an order total and returns it ({ id, url, ... }).
 // Dev only: in production the merchant's own backend should create paylinks with its

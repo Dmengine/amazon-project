@@ -1,0 +1,32 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "installCommand": "npm ci --prefix trvst-pay",
+  "functions": {
+    "api/index.mjs": {
+      "includeFiles": "trvst-pay/{src,node_modules}/**",
+      "maxDuration": 30
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/api/:path*",
+      "destination": "/api/index.mjs"
+    },
+    {
+      "source": "/pay/:path*",
+      "destination": "/api/index.mjs"
+    },
+    {
+      "source": "/webhooks/:path*",
+      "destination": "/api/index.mjs"
+    },
+    {
+      "source": "/mock/:path*",
+      "destination": "/api/index.mjs"
+    },
+    {
+      "source": "/health",
+      "destination": "/api/index.mjs"
+    }
+  ]
+}

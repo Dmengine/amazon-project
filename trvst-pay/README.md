@@ -23,6 +23,17 @@ In **mock** mode (the default) both providers are simulated, so you can click th
 
 The storefront's checkout page (`checkout.html`) has a **Pay with TRVST PAY** button. It creates a paylink for the order total and shows the QR code (to pay on a phone) next to a **Pay in this browser** button. Checkout polls the link and goes to the orders page once it's paid. The payer page also has a **Pay on your phone instead** QR code for desktop users. To try it, serve the repo root on port 5500 (e.g. `python3 -m http.server 5500`) while the service is running.
 
+## Deploy to Vercel
+
+The repo root deploys as one Vercel project. The storefront is served as static files, and `api/index.mjs` runs this service as a Vercel Function. `vercel.json` rewrites `/api/*`, `/pay/*`, `/webhooks/*`, `/mock/*` and `/health` to it, and installs `trvst-pay` dependencies.
+
+1. Create the project from this repo. Framework preset: **Other**.
+2. **Connect an Upstash Redis store** (Vercel Marketplace → Upstash → Redis), linked to the project. It sets `KV_REST_API_URL` and `KV_REST_API_TOKEN`. `UPSTASH_REDIS_REST_URL`/`UPSTASH_REDIS_REST_TOKEN` also work. Without Redis the function refuses to start on Vercel, because the filesystem there isn't shared or durable.
+3. Optional environment variables: `TRVST_PAY_MODE=live` with the provider credentials from `.env.example`, `TRVST_PAY_API_KEY`, and `TRVST_PAY_PUBLIC_URL` (defaults to the project's production domain).
+4. Deploy, then check `GET /health`. It should report `"store": "RedisStore"`.
+
+Locally, without Redis variables, the service uses the JSON file as before.
+
 ## API
 
 All `/api/*` calls need `Authorization: Bearer $TRVST_PAY_API_KEY` when that variable is set.

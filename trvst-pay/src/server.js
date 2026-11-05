@@ -1,7 +1,7 @@
 import http from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { loadConfig } from './config.js';
-import { PaylinkStore } from './store.js';
+import { storeFromEnv, LockTimeoutError } from './store.js';
 import { PaylinkService, ValidationError, publicView } from './paylinks.js';
 import { createGlobalPayments, safeEqual } from './providers/globalPayments.js';
 import { createOpenPayd } from './providers/openpayd.js';
@@ -18,35 +18,37 @@ export function createApp(config = loadConfig()) {
     ? { globalPayments: createGlobalPayments(config.globalPayments), openpayd: createOpenPayd(config.openpayd) }
     : createMockProviders(config.publicUrl));
   const service = new PaylinkService({
-    store: config.store || new PaylinkStore(config.storeFile),
+    store: config.store || storeFromEnv(process.env, config.storeFile),
     providers,
     publicUrl: config.publicUrl,
   });
 
   const routes = [
     ['OPTIONS', /^\/api\/.*$/, (req, res) => send(res, 204)],
-    ['GET', /^\/health$/, (req, res) => json(res, 200, { ok: true, mode: config.mode })],
+    ['GET', /^\/health$/, (req, res) => json(res, 200, {
+      ok: true, mode: config.mode, store: service.store.constructor.name, publicUrl: config.publicUrl,
+    })],
 
     // --- Merchant API ---
     ['POST', /^\/api\/paylinks$/, async (req, res) => {
       if (!authorised(req)) return json(res, 401, { error: 'unauthorised' });
-      const paylink = service.create(parseJson(await readBody(req)));
+      const paylink = await service.create(parseJson(await readBody(req)));
       json(res, 201, publicView(paylink));
     }],
-    ['GET', /^\/api\/paylinks\/([\w-]+)$/, (req, res, [id]) => {
+    ['GET', /^\/api\/paylinks\/([\w-]+)$/, async (req, res, [id]) => {
       if (!authorised(req)) return json(res, 401, { error: 'unauthorised' });
-      const paylink = service.get(id);
+      const paylink = await service.get(id);
       return paylink ? json(res, 200, publicView(paylink)) : json(res, 404, { error: 'not found' });
     }],
-    ['POST', /^\/api\/paylinks\/([\w-]+)\/cancel$/, (req, res, [id]) => {
+    ['POST', /^\/api\/paylinks\/([\w-]+)\/cancel$/, async (req, res, [id]) => {
       if (!authorised(req)) return json(res, 401, { error: 'unauthorised' });
-      const paylink = service.cancel(id);
+      const paylink = await service.cancel(id);
       return paylink ? json(res, 200, publicView(paylink)) : json(res, 404, { error: 'not found' });
     }],
 
     // --- Payer-facing hosted page ---
     ['GET', /^\/pay\/([\w-]+)$/, async (req, res, [id]) => {
-      const paylink = service.get(id);
+      const paylink = await service.get(id);
       if (!paylink) return html(res, 404, pages.notFound());
       const error = new URL(req.url, 'http://x').searchParams.get('error');
       const qr = paylink.status === 'open' ? await qrSvg(paylink.url) : null;
@@ -56,7 +58,7 @@ export function createApp(config = loadConfig()) {
       try {
         redirect(res, await service.startPayment(id, method));
       } catch (error) {
-        if (!(error instanceof ValidationError || error instanceof ProviderError)) throw error;
+        if (!(error instanceof ValidationError || error instanceof ProviderError || error instanceof LockTimeoutError)) throw error;
         console.error(`[trvst-pay] start ${method} payment for ${id}:`, error.message);
         const message = error instanceof ProviderError
           ? `We couldn't start the ${method === 'card' ? 'card' : 'bank'} payment. Please try again or choose another method.`
@@ -64,32 +66,32 @@ export function createApp(config = loadConfig()) {
         redirect(res, `/pay/${id}?error=${encodeURIComponent(message)}`);
       }
     }],
-    ['GET', /^\/pay\/([\w-]+)\/return$/, (req, res, [id]) => {
-      const paylink = service.get(id);
+    ['GET', /^\/pay\/([\w-]+)\/return$/, async (req, res, [id]) => {
+      const paylink = await service.get(id);
       if (!paylink) return html(res, 404, pages.notFound());
       html(res, 200, pages.returnPage(paylink));
     }],
     ['GET', /^\/pay\/([\w-]+)\/qr\.svg$/, async (req, res, [id]) => {
-      const paylink = service.get(id);
+      const paylink = await service.get(id);
       if (!paylink) return json(res, 404, { error: 'not found' });
       res.setHeader('Cache-Control', 'public, max-age=86400');
       send(res, 200, await qrSvg(paylink.url), 'image/svg+xml');
     }],
     ['GET', /^\/pay\/([\w-]+)\/qr\.png$/, async (req, res, [id]) => {
-      const paylink = service.get(id);
+      const paylink = await service.get(id);
       if (!paylink) return json(res, 404, { error: 'not found' });
       const size = new URL(req.url, 'http://x').searchParams.get('size');
       res.setHeader('Cache-Control', 'public, max-age=86400');
       send(res, 200, await qrPng(paylink.url, size), 'image/png');
     }],
     ['GET', /^\/pay\/([\w-]+)\/share$/, async (req, res, [id]) => {
-      const paylink = service.get(id);
+      const paylink = await service.get(id);
       if (!paylink) return html(res, 404, pages.notFound());
       const nonce = crypto.randomBytes(16).toString('base64');
       html(res, 200, pages.sharePage(paylink, await qrSvg(paylink.url), nonce), nonce);
     }],
-    ['GET', /^\/pay\/([\w-]+)\/status$/, (req, res, [id]) => {
-      const paylink = service.get(id);
+    ['GET', /^\/pay\/([\w-]+)\/status$/, async (req, res, [id]) => {
+      const paylink = await service.get(id);
       if (!paylink) return json(res, 404, { error: 'not found' });
       json(res, 200, { id: paylink.id, status: paylink.status, paidWith: paylink.paidWith || null });
     }],
@@ -99,7 +101,7 @@ export function createApp(config = loadConfig()) {
       const raw = await readBody(req);
       if (!providers.globalPayments.verifyWebhook(raw, req.headers)) return json(res, 401, { error: 'bad signature' });
       const update = providers.globalPayments.parseWebhook(parseJson(raw));
-      const paylink = service.applyProviderUpdate({
+      const paylink = await service.applyProviderUpdate({
         provider: 'globalpayments', providerId: update.linkId, reference: update.reference,
         status: update.status, transactionId: update.transactionId,
         amount: update.amount, currency: update.currency,
@@ -117,7 +119,7 @@ export function createApp(config = loadConfig()) {
         const payin = await providers.openpayd.getPayIn(update.payinId);
         update = { payinId: update.payinId, reference: payin?.reference, status: providers.openpayd.mapStatus(payin?.status) };
       }
-      const paylink = service.applyProviderUpdate({
+      const paylink = await service.applyProviderUpdate({
         provider: 'openpayd', providerId: update.payinId, reference: update.reference, status: update.status,
       });
       json(res, 200, { received: true, matched: Boolean(paylink) });
@@ -126,16 +128,16 @@ export function createApp(config = loadConfig()) {
 
   if (config.mode === 'mock') {
     routes.push(
-      ['GET', /^\/mock\/(card|bank)\/([\w-]+)$/, (req, res, [kind, id]) => {
-        const paylink = service.get(id);
+      ['GET', /^\/mock\/(card|bank)\/([\w-]+)$/, async (req, res, [kind, id]) => {
+        const paylink = await service.get(id);
         if (!paylink) return html(res, 404, pages.notFound());
         html(res, 200, pages.mockProviderPage(paylink, kind));
       }],
-      ['POST', /^\/mock\/(card|bank)\/([\w-]+)\/(paid|failed)$/, (req, res, [kind, id, outcome]) => {
-        const paylink = service.get(id);
+      ['POST', /^\/mock\/(card|bank)\/([\w-]+)\/(paid|failed)$/, async (req, res, [kind, id, outcome]) => {
+        const paylink = await service.get(id);
         const attempt = paylink?.attempts.find((a) => a.method === kind && a.status === 'pending');
         if (attempt) {
-          service.applyProviderUpdate({ provider: attempt.provider, providerId: attempt.providerId, status: outcome });
+          await service.applyProviderUpdate({ provider: attempt.provider, providerId: attempt.providerId, status: outcome });
         }
         redirect(res, `/pay/${id}/return?method=${kind}`);
       }],
@@ -158,7 +160,7 @@ export function createApp(config = loadConfig()) {
     }
   }
 
-  const server = http.createServer(async (req, res) => {
+  async function handler(req, res) {
     let pathname;
     try {
       ({ pathname } = new URL(req.url, 'http://x'));
@@ -182,9 +184,9 @@ export function createApp(config = loadConfig()) {
       console.error('[trvst-pay] unexpected error', error);
       json(res, 500, { error: 'internal error' });
     }
-  });
+  }
 
-  return { server, service };
+  return { server: http.createServer(handler), handler, service };
 }
 
 function readBody(req) {

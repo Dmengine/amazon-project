@@ -1,0 +1,5 @@
+trvst-pay/node_modules
+trvst-pay/data
+trvst-pay/.env
+test-jasmine
+.vscode

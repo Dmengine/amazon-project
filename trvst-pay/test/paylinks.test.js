@@ -4,7 +4,7 @@ import http from 'node:http';
 import crypto from 'node:crypto';
 import net from 'node:net';
 import { createApp } from '../src/server.js';
-import { PaylinkStore } from '../src/store.js';
+import { MemoryStore, RedisStore, storeFromEnv } from '../src/store.js';
 import { createGlobalPayments } from '../src/providers/globalPayments.js';
 import { createOpenPayd } from '../src/providers/openpayd.js';
 
@@ -13,7 +13,7 @@ const listen = (server) => new Promise((resolve) => server.listen(0, '127.0.0.1'
 function baseConfig(extra = {}) {
   return {
     port: 0, publicUrl: 'http://pay.test', allowedOrigins: ['http://shop.test'], mode: 'mock',
-    storeFile: null, store: new PaylinkStore(null), apiKey: 'k_test', ...extra,
+    storeFile: null, store: new MemoryStore(null), apiKey: 'k_test', ...extra,
   };
 }
 
@@ -83,7 +83,7 @@ test('expired links cannot be paid', async () => {
   let now = new Date('2026-01-01T00:00:00Z');
   const app = createApp(baseConfig());
   app.service.now = () => now;
-  const link = app.service.create({ amount: 100, currency: 'EUR', reference: 'EXP', expiresInHours: 1 });
+  const link = await app.service.create({ amount: 100, currency: 'EUR', reference: 'EXP', expiresInHours: 1 });
   now = new Date('2026-01-01T02:00:00Z');
   await assert.rejects(app.service.startPayment(link.id, 'card'), /expired/);
 });
@@ -171,7 +171,7 @@ test('webhooks update paylink status in live wiring', async (t) => {
   const app = await startApp({ mode: 'live', providers });
   t.after(app.close);
 
-  const card = app.service.create({ amount: 500, currency: 'GBP', reference: 'C-1' });
+  const card = await app.service.create({ amount: 500, currency: 'GBP', reference: 'C-1' });
   await app.service.startPayment(card.id, 'card');
   const raw = JSON.stringify({ id: 'TRN_1', status: 'CAPTURED', link_data: { id: 'LNK_9' } });
   const bad = await fetch(`${app.url}/webhooks/globalpayments`, { method: 'POST', body: raw, headers: { 'x-gp-signature': 'x' } });
@@ -179,14 +179,14 @@ test('webhooks update paylink status in live wiring', async (t) => {
   const sig = crypto.createHash('sha512').update(raw + appKey).digest('hex');
   const good = await fetch(`${app.url}/webhooks/globalpayments`, { method: 'POST', body: raw, headers: { 'x-gp-signature': sig } });
   assert.deepEqual(await good.json(), { received: true, matched: true });
-  assert.equal(app.service.get(card.id).status, 'paid');
+  assert.equal((await app.service.get(card.id)).status, 'paid');
 
   // OpenPayd without a shared secret: the body's status is ignored and the PayIn is re-read.
-  const bank = app.service.create({ amount: 500, currency: 'GBP', reference: 'B-1' });
+  const bank = await app.service.create({ amount: 500, currency: 'GBP', reference: 'B-1' });
   await app.service.startPayment(bank.id, 'bank');
   const res = await fetch(`${app.url}/webhooks/openpayd`, { method: 'POST', body: JSON.stringify({ id: 'PI_9', status: 'FAILED' }) });
   assert.deepEqual(await res.json(), { received: true, matched: true });
-  assert.equal(app.service.get(bank.id).status, 'paid');
+  assert.equal((await app.service.get(bank.id)).status, 'paid');
 });
 
 test('paylink exposes a button and QR code, and the share page renders them', async (t) => {
@@ -232,7 +232,7 @@ test('paylink exposes a button and QR code, and the share page renders them', as
 test('status endpoint is readable from the storefront origin', async (t) => {
   const app = await startApp();
   t.after(app.close);
-  const link = app.service.create({ amount: 100, currency: 'GBP', reference: 'ST-1' });
+  const link = await app.service.create({ amount: 100, currency: 'GBP', reference: 'ST-1' });
   const res = await fetch(`${app.url}/pay/${link.id}/status`, { headers: { Origin: 'http://shop.test' } });
   assert.equal(res.headers.get('access-control-allow-origin'), 'http://shop.test');
 });
@@ -262,13 +262,13 @@ function countingProviders() {
 test('concurrent starts for one paylink create a single provider session', async () => {
   const fake = countingProviders();
   const { service } = createApp(baseConfig({ providers: fake.providers }));
-  const link = service.create({ amount: 100, currency: 'GBP', reference: 'CC-1' });
+  const link = await service.create({ amount: 100, currency: 'GBP', reference: 'CC-1' });
   const both = Promise.all([service.startPayment(link.id, 'card'), service.startPayment(link.id, 'card')]);
   fake.release();
   const [a, b] = await both;
   assert.equal(fake.calls.card, 1);
   assert.equal(a, b);
-  assert.equal(service.get(link.id).attempts.length, 1);
+  assert.equal((await service.get(link.id)).attempts.length, 1);
 });
 
 test('only one payable session per paylink: switching method while pending is refused', async (t) => {
@@ -276,7 +276,7 @@ test('only one payable session per paylink: switching method while pending is re
   fake.release();
   const app = await startApp({ providers: fake.providers });
   t.after(app.close);
-  const link = app.service.create({ amount: 100, currency: 'GBP', reference: 'SW-1' });
+  const link = await app.service.create({ amount: 100, currency: 'GBP', reference: 'SW-1' });
   await app.service.startPayment(link.id, 'card');
   await assert.rejects(app.service.startPayment(link.id, 'bank'), (e) => e.status === 409);
   assert.equal(fake.calls.bank, 0);
@@ -286,7 +286,7 @@ test('only one payable session per paylink: switching method while pending is re
   assert.doesNotMatch(page, /Pay by bank/);
 
   // Once the card attempt has failed the payer may choose again.
-  app.service.applyProviderUpdate({ provider: 'globalpayments', providerId: 'LNK_1', status: 'failed' });
+  await app.service.applyProviderUpdate({ provider: 'globalpayments', providerId: 'LNK_1', status: 'failed' });
   assert.equal(await app.service.startPayment(link.id, 'bank'), 'https://bank/1');
 });
 
@@ -294,17 +294,17 @@ test('provider events must correlate to the recorded session', async () => {
   const fake = countingProviders();
   fake.release();
   const { service } = createApp(baseConfig({ providers: fake.providers }));
-  const link = service.create({ amount: 1234, currency: 'EUR', reference: 'COR-1' });
+  const link = await service.create({ amount: 1234, currency: 'EUR', reference: 'COR-1' });
   await service.startPayment(link.id, 'card');
 
   // A different provider ID with the same reference must not settle this link.
-  assert.equal(service.applyProviderUpdate({ provider: 'globalpayments', providerId: 'LNK_OTHER', reference: 'COR-1', status: 'paid' }), null);
+  assert.equal(await service.applyProviderUpdate({ provider: 'globalpayments', providerId: 'LNK_OTHER', reference: 'COR-1', status: 'paid' }), null);
   // No provider ID: reference fallback needs amount and currency to match.
-  assert.equal(service.applyProviderUpdate({ provider: 'globalpayments', reference: 'COR-1', amount: 1, currency: 'EUR', status: 'paid' }), null);
-  assert.equal(service.applyProviderUpdate({ provider: 'openpayd', reference: 'COR-1', amount: 1234, currency: 'EUR', status: 'paid' }), null, 'no attempt with that provider');
-  assert.equal(service.get(link.id).status, 'open');
-  service.applyProviderUpdate({ provider: 'globalpayments', reference: 'COR-1', amount: 1234, currency: 'eur', status: 'paid' });
-  assert.equal(service.get(link.id).status, 'paid');
+  assert.equal(await service.applyProviderUpdate({ provider: 'globalpayments', reference: 'COR-1', amount: 1, currency: 'EUR', status: 'paid' }), null);
+  assert.equal(await service.applyProviderUpdate({ provider: 'openpayd', reference: 'COR-1', amount: 1234, currency: 'EUR', status: 'paid' }), null, 'no attempt with that provider');
+  assert.equal((await service.get(link.id)).status, 'open');
+  await service.applyProviderUpdate({ provider: 'globalpayments', reference: 'COR-1', amount: 1234, currency: 'eur', status: 'paid' });
+  assert.equal((await service.get(link.id)).status, 'paid');
 });
 
 test('a confirmed payment is recorded even after the link expired locally', async () => {
@@ -313,31 +313,31 @@ test('a confirmed payment is recorded even after the link expired locally', asyn
   fake.release();
   const { service } = createApp(baseConfig({ providers: fake.providers }));
   service.now = () => now;
-  const link = service.create({ amount: 100, currency: 'GBP', reference: 'LATE-1', expiresInHours: 1 });
+  const link = await service.create({ amount: 100, currency: 'GBP', reference: 'LATE-1', expiresInHours: 1 });
   await service.startPayment(link.id, 'card');
   now = new Date('2026-01-01T02:00:00Z');
-  assert.equal(service.get(link.id).status, 'expired');
-  service.applyProviderUpdate({ provider: 'globalpayments', providerId: 'LNK_1', status: 'paid' });
-  const after = service.get(link.id);
+  assert.equal((await service.get(link.id)).status, 'expired');
+  await service.applyProviderUpdate({ provider: 'globalpayments', providerId: 'LNK_1', status: 'paid' });
+  const after = await service.get(link.id);
   assert.equal(after.status, 'paid');
   assert.equal(after.settledAfter, 'expired');
   // A late "failed" for the same session doesn't undo the success.
-  service.applyProviderUpdate({ provider: 'globalpayments', providerId: 'LNK_1', status: 'failed' });
-  assert.equal(service.get(link.id).attempts[0].status, 'succeeded');
+  await service.applyProviderUpdate({ provider: 'globalpayments', providerId: 'LNK_1', status: 'failed' });
+  assert.equal((await service.get(link.id)).attempts[0].status, 'succeeded');
 });
 
 test('a second successful session is flagged for refund', async () => {
   const fake = countingProviders();
   fake.release();
   const { service } = createApp(baseConfig({ providers: fake.providers }));
-  const link = service.create({ amount: 100, currency: 'GBP', reference: 'DUP-1' });
+  const link = await service.create({ amount: 100, currency: 'GBP', reference: 'DUP-1' });
   await service.startPayment(link.id, 'card');
-  service.applyProviderUpdate({ provider: 'globalpayments', providerId: 'LNK_1', status: 'failed' });
+  await service.applyProviderUpdate({ provider: 'globalpayments', providerId: 'LNK_1', status: 'failed' });
   await service.startPayment(link.id, 'bank');
-  service.applyProviderUpdate({ provider: 'openpayd', providerId: 'PI_1', status: 'paid' });
+  await service.applyProviderUpdate({ provider: 'openpayd', providerId: 'PI_1', status: 'paid' });
   // The "failed" card session later turns out to have been captured after all.
-  service.applyProviderUpdate({ provider: 'globalpayments', providerId: 'LNK_1', status: 'paid' });
-  const after = service.get(link.id);
+  await service.applyProviderUpdate({ provider: 'globalpayments', providerId: 'LNK_1', status: 'paid' });
+  const after = await service.get(link.id);
   assert.equal(after.paidWith, 'openpayd');
   assert.equal(after.needsRefund, true);
 });
@@ -347,13 +347,13 @@ test('cancel is refused while a provider session is open', async (t) => {
   fake.release();
   const app = await startApp({ providers: fake.providers });
   t.after(app.close);
-  const busy = app.service.create({ amount: 100, currency: 'GBP', reference: 'CAN-1' });
+  const busy = await app.service.create({ amount: 100, currency: 'GBP', reference: 'CAN-1' });
   await app.service.startPayment(busy.id, 'card');
   const res = await fetch(`${app.url}/api/paylinks/${busy.id}/cancel`, { method: 'POST', headers: auth });
   assert.equal(res.status, 409);
-  assert.equal(app.service.get(busy.id).status, 'open');
+  assert.equal((await app.service.get(busy.id)).status, 'open');
 
-  const idle = app.service.create({ amount: 100, currency: 'GBP', reference: 'CAN-2' });
+  const idle = await app.service.create({ amount: 100, currency: 'GBP', reference: 'CAN-2' });
   const ok = await fetch(`${app.url}/api/paylinks/${idle.id}/cancel`, { method: 'POST', headers: auth });
   assert.equal((await ok.json()).status, 'cancelled');
 });
