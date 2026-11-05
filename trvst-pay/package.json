@@ -10,5 +10,8 @@
   "scripts": {
     "start": "node src/server.js",
     "test": "node --test test/*.test.js"
+  },
+  "dependencies": {
+    "qrcode": "1.5.4"
   }
 }

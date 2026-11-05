@@ -187,3 +187,51 @@ test('webhooks update paylink status in live wiring', async (t) => {
   assert.deepEqual(await res.json(), { received: true, matched: true });
   assert.equal(app.service.get(bank.id).status, 'paid');
 });
+
+test('paylink exposes a button and QR code, and the share page renders them', async (t) => {
+  const app = await startApp();
+  t.after(app.close);
+  const link = await (await fetch(`${app.url}/api/paylinks`, {
+    method: 'POST', headers: auth,
+    body: JSON.stringify({ amount: 2500, currency: 'EUR', reference: 'QR-1', description: 'Coffee' }),
+  })).json();
+
+  assert.equal(link.qrCodeUrl, `${link.url}/qr.svg`);
+  assert.equal(link.qrCodePngUrl, `${link.url}/qr.png`);
+  assert.equal(link.shareUrl, `${link.url}/share`);
+  assert.match(link.buttonHtml, new RegExp(`href="${link.url}"`));
+  assert.match(link.buttonHtml, /Pay €25\.00 with TRVST PAY/);
+  assert.match(link.buttonHtml, new RegExp(`src="${link.url}/qr.png"`));
+
+  const svg = await fetch(`${app.url}/pay/${link.id}/qr.svg`);
+  assert.equal(svg.headers.get('content-type'), 'image/svg+xml');
+  assert.match(await svg.text(), /^<svg[^>]*viewBox/);
+
+  const png = await fetch(`${app.url}/pay/${link.id}/qr.png?size=256`);
+  assert.equal(png.headers.get('content-type'), 'image/png');
+  const bytes = Buffer.from(await png.arrayBuffer());
+  assert.equal(bytes.subarray(1, 4).toString(), 'PNG');
+  assert.equal(bytes.readUInt32BE(16), 256, 'PNG width honours ?size');
+
+  assert.equal((await fetch(`${app.url}/pay/pl_missing/qr.svg`)).status, 404);
+
+  const share = await fetch(`${app.url}/pay/${link.id}/share`);
+  const csp = share.headers.get('content-security-policy');
+  const nonce = csp.match(/'nonce-([^']+)'/)[1];
+  const page = await share.text();
+  assert.match(page, /<svg/);
+  assert.match(page, /Copy embed code/);
+  assert.ok(page.includes(`<script nonce="${nonce}">`), 'inline script carries the CSP nonce');
+  assert.ok(page.includes('&lt;a href='), 'embed code is HTML-escaped in the textarea');
+
+  const pay = await (await fetch(`${app.url}/pay/${link.id}`)).text();
+  assert.match(pay, /Pay on your phone instead/);
+});
+
+test('status endpoint is readable from the storefront origin', async (t) => {
+  const app = await startApp();
+  t.after(app.close);
+  const link = app.service.create({ amount: 100, currency: 'GBP', reference: 'ST-1' });
+  const res = await fetch(`${app.url}/pay/${link.id}/status`, { headers: { Origin: 'http://shop.test' } });
+  assert.equal(res.headers.get('access-control-allow-origin'), 'http://shop.test');
+});

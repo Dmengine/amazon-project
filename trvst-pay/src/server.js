@@ -8,6 +8,8 @@ import { createOpenPayd } from './providers/openpayd.js';
 import { createMockProviders } from './providers/mock.js';
 import { ProviderError } from './providers/http.js';
 import * as pages from './pages.js';
+import { qrSvg, qrPng } from './qr.js';
+import crypto from 'node:crypto';
 
 const MAX_BODY = 64 * 1024;
 
@@ -43,10 +45,12 @@ export function createApp(config = loadConfig()) {
     }],
 
     // --- Payer-facing hosted page ---
-    ['GET', /^\/pay\/([\w-]+)$/, (req, res, [id]) => {
+    ['GET', /^\/pay\/([\w-]+)$/, async (req, res, [id]) => {
       const paylink = service.get(id);
       if (!paylink) return html(res, 404, pages.notFound());
-      html(res, 200, pages.payPage(paylink, new URL(req.url, 'http://x').searchParams.get('error')));
+      const error = new URL(req.url, 'http://x').searchParams.get('error');
+      const qr = paylink.status === 'open' ? await qrSvg(paylink.url) : null;
+      html(res, 200, pages.payPage(paylink, error, qr));
     }],
     ['POST', /^\/pay\/([\w-]+)\/(card|bank)$/, async (req, res, [id, method]) => {
       try {
@@ -64,6 +68,25 @@ export function createApp(config = loadConfig()) {
       const paylink = service.get(id);
       if (!paylink) return html(res, 404, pages.notFound());
       html(res, 200, pages.returnPage(paylink));
+    }],
+    ['GET', /^\/pay\/([\w-]+)\/qr\.svg$/, async (req, res, [id]) => {
+      const paylink = service.get(id);
+      if (!paylink) return json(res, 404, { error: 'not found' });
+      res.setHeader('Cache-Control', 'public, max-age=86400');
+      send(res, 200, await qrSvg(paylink.url), 'image/svg+xml');
+    }],
+    ['GET', /^\/pay\/([\w-]+)\/qr\.png$/, async (req, res, [id]) => {
+      const paylink = service.get(id);
+      if (!paylink) return json(res, 404, { error: 'not found' });
+      const size = new URL(req.url, 'http://x').searchParams.get('size');
+      res.setHeader('Cache-Control', 'public, max-age=86400');
+      send(res, 200, await qrPng(paylink.url, size), 'image/png');
+    }],
+    ['GET', /^\/pay\/([\w-]+)\/share$/, async (req, res, [id]) => {
+      const paylink = service.get(id);
+      if (!paylink) return html(res, 404, pages.notFound());
+      const nonce = crypto.randomBytes(16).toString('base64');
+      html(res, 200, pages.sharePage(paylink, await qrSvg(paylink.url), nonce), nonce);
     }],
     ['GET', /^\/pay\/([\w-]+)\/status$/, (req, res, [id]) => {
       const paylink = service.get(id);
@@ -136,7 +159,7 @@ export function createApp(config = loadConfig()) {
 
   const server = http.createServer(async (req, res) => {
     const { pathname } = new URL(req.url, 'http://x');
-    if (pathname.startsWith('/api/')) cors(req, res);
+    if (pathname.startsWith('/api/') || /^\/pay\/[\w-]+\/status$/.test(pathname)) cors(req, res);
     try {
       for (const [method, pattern, handler] of routes) {
         const match = req.method === method && pathname.match(pattern);
@@ -190,8 +213,9 @@ function send(res, status, body = '', type) {
   res.end(body);
 }
 const json = (res, status, data) => send(res, status, JSON.stringify(data), 'application/json');
-function html(res, status, body) {
-  res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; form-action 'self' https:; base-uri 'none'; frame-ancestors 'none'");
+function html(res, status, body, nonce) {
+  const script = nonce ? ` script-src 'nonce-${nonce}';` : '';
+  res.setHeader('Content-Security-Policy', `default-src 'none'; style-src 'unsafe-inline';${script} form-action 'self' https:; base-uri 'none'; frame-ancestors 'none'`);
   send(res, status, body, 'text/html; charset=utf-8');
 }
 function redirect(res, location) {

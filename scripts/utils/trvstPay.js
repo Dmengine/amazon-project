@@ -22,3 +22,53 @@ export async function createPaylink({ amountCents, currency = 'USD', reference, 
   }
   return data;
 }
+
+// Public status of a paylink: { id, status: 'open' | 'paid' | 'expired' | 'cancelled', paidWith }.
+export async function getPaylinkStatus(id) {
+  const response = await fetch(`${TRVST_PAY_URL}/pay/${encodeURIComponent(id)}/status`);
+  if (!response.ok) {
+    throw new Error(`TRVST PAY returned ${response.status}`);
+  }
+  return response.json();
+}
+
+// Renders a "pay by button or QR code" panel into `container` and polls until the paylink is paid,
+// then calls onPaid. Returns a stop() function that cancels the polling.
+export function showPaylinkPanel(container, paylink, { onPaid, intervalMs = 3000 } = {}) {
+  container.innerHTML = `
+    <div class="trvst-pay-panel">
+      <div class="trvst-pay-title">Scan to pay with your phone</div>
+      <img class="trvst-pay-qr" src="${paylink.qrCodeUrl}" width="180" height="180"
+        alt="QR code for the TRVST PAY payment link">
+      <a class="trvst-pay-open button-primary" href="${paylink.url}">
+        Pay in this browser
+      </a>
+      <div class="trvst-pay-status js-trvst-pay-status" role="status">
+        Waiting for payment…
+      </div>
+    </div>
+  `;
+  const statusEl = container.querySelector('.js-trvst-pay-status');
+
+  let stopped = false;
+  async function poll() {
+    if (stopped) return;
+    try {
+      const { status } = await getPaylinkStatus(paylink.id);
+      if (status === 'paid') {
+        statusEl.textContent = 'Payment received ✓';
+        onPaid?.(paylink);
+        return;
+      }
+      if (status !== 'open') {
+        statusEl.textContent = `This payment link is ${status}.`;
+        return;
+      }
+    } catch {
+      // Network blip: keep polling.
+    }
+    setTimeout(poll, intervalMs);
+  }
+  setTimeout(poll, intervalMs);
+  return () => { stopped = true; };
+}

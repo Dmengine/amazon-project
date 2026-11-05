@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { buttonHtml } from './pages.js';
 
 export const CURRENCIES = new Set(['GBP', 'EUR', 'USD']);
 const FINAL = new Set(['paid', 'expired', 'cancelled']);
@@ -148,6 +149,10 @@ export function publicView(p) {
     expiresAt: p.expiresAt,
     paidAt: p.paidAt || null,
     paidWith: p.paidWith || null,
+    qrCodeUrl: `${p.url}/qr.svg`,
+    qrCodePngUrl: `${p.url}/qr.png`,
+    shareUrl: `${p.url}/share`,
+    buttonHtml: buttonHtml(p),
     attempts: p.attempts.map(({ method, provider, providerId, status, createdAt }) =>
       ({ method, provider, providerId, status, createdAt })),
   };

@@ -32,6 +32,18 @@ ${refresh ? `<meta http-equiv="refresh" content="${refresh}">` : ''}
   .bad { color:var(--bad); }
   a { color:var(--brand); }
   hr { border:0; border-top:1px solid var(--line); margin:20px 0 8px; }
+  .center { text-align:center; }
+  details { margin-top:16px; } summary { cursor:pointer; }
+  .qr { width:220px; max-width:100%; margin:12px auto 0; padding:8px; background:#fff; border-radius:8px; }
+  .qr svg { display:block; width:100%; height:auto; }
+  a.button { display:block; text-align:center; text-decoration:none; padding:14px 16px; border-radius:8px; font-weight:600; margin-top:12px; }
+  a.button.primary { background:var(--brand); color:var(--brand-ink); }
+  label { display:block; font-size:14px; font-weight:600; margin:20px 0 6px; }
+  .row { display:flex; gap:8px; }
+  input, textarea { width:100%; padding:10px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--ink); font:13px/1.4 ui-monospace, Menlo, monospace; }
+  textarea { resize:vertical; }
+  button.copy { width:auto; margin-top:0; padding:8px 14px; text-align:center; white-space:nowrap; }
+  textarea + button.copy { margin-top:8px; }
 </style>
 </head>
 <body><main><div class="brand">TRVST PAY</div>${body}</main></body>
@@ -44,7 +56,7 @@ function summary(p) {
   <div class="muted">Reference ${esc(p.reference)}</div>`;
 }
 
-export function payPage(p, error) {
+export function payPage(p, error, qrSvgMarkup) {
   if (p.status === 'paid') return returnPage(p);
   if (p.status !== 'open') {
     return layout('Link unavailable', `<div class="card">${summary(p)}<hr>
@@ -61,6 +73,9 @@ export function payPage(p, error) {
   return layout(`Pay ${formatAmount(p.amount, p.currency)}`, `<div class="card">${summary(p)}
     ${error ? `<div class="error" role="alert">${esc(error)}</div>` : ''}
     <hr>${card}${bank}
+    ${qrSvgMarkup ? `<details><summary class="muted">Pay on your phone instead</summary>
+      <div class="qr" role="img" aria-label="QR code for this payment link">${qrSvgMarkup}</div>
+      <p class="muted center">Scan with your phone camera</p></details>` : ''}
     <p class="muted">Link expires ${esc(new Date(p.expiresAt).toUTCString())}.</p></div>`);
 }
 
@@ -88,6 +103,51 @@ export function mockProviderPage(p, kind) {
     <div class="amount">${esc(formatAmount(p.amount, p.currency))}</div><hr>
     <form method="post" action="/mock/${kind}/${esc(p.id)}/paid"><button class="primary">Simulate successful payment</button></form>
     <form method="post" action="/mock/${kind}/${esc(p.id)}/failed"><button>Simulate failed payment</button></form></div>`);
+}
+
+// Self-contained HTML a merchant can paste into a website or HTML email: a pay button plus the
+// QR code image. Inline styles only, so it renders the same in email clients.
+export function buttonHtml(p) {
+  const label = `Pay ${formatAmount(p.amount, p.currency)} with TRVST PAY`;
+  return `<div style="display:inline-block;text-align:center;font-family:Arial,Helvetica,sans-serif">` +
+    `<a href="${esc(p.url)}" target="_blank" rel="noopener" style="display:inline-block;background:#0f5c4c;color:#ffffff;` +
+    `text-decoration:none;font-weight:bold;font-size:16px;padding:12px 22px;border-radius:8px">${esc(label)}</a>` +
+    `<br><img src="${esc(p.url)}/qr.png" width="160" height="160" alt="QR code: scan to pay ${esc(formatAmount(p.amount, p.currency))}" style="margin-top:10px">` +
+    `<div style="font-size:12px;color:#5d6472">Scan to pay on your phone</div></div>`;
+}
+
+export function sharePage(p, qrSvgMarkup, nonce) {
+  const amount = formatAmount(p.amount, p.currency);
+  const unavailable = p.status !== 'open'
+    ? `<p class="${p.status === 'paid' ? 'ok' : 'bad'}">This link is ${esc(p.status)}.</p>` : '';
+  return layout(`Share ${amount} paylink`, `<div class="card">${summary(p)}${unavailable}<hr>
+    <div class="qr" aria-label="QR code: scan to pay ${esc(amount)}" role="img">${qrSvgMarkup}</div>
+    <p class="muted center">Scan with a phone camera to pay</p>
+    <a class="button primary" href="${esc(p.url)}" target="_blank" rel="noopener">Pay ${esc(amount)} with TRVST PAY</a>
+
+    <label for="link">Payment link</label>
+    <div class="row"><input id="link" readonly value="${esc(p.url)}"><button type="button" class="copy" data-copy="link">Copy</button></div>
+
+    <label for="embed">Button + QR code for your website or email</label>
+    <textarea id="embed" readonly rows="5">${esc(buttonHtml(p))}</textarea>
+    <button type="button" class="copy" data-copy="embed">Copy embed code</button>
+
+    <p class="muted">Download QR code:
+      <a href="/pay/${esc(p.id)}/qr.svg" download="trvst-pay-${esc(p.reference)}.svg">SVG</a> ·
+      <a href="/pay/${esc(p.id)}/qr.png?size=1024" download="trvst-pay-${esc(p.reference)}.png">PNG</a></p>
+  </div>
+  <script nonce="${nonce}">
+    for (const button of document.querySelectorAll('[data-copy]')) {
+      button.addEventListener('click', async () => {
+        const field = document.getElementById(button.dataset.copy);
+        try { await navigator.clipboard.writeText(field.value); }
+        catch { field.select(); document.execCommand('copy'); }
+        const text = button.textContent;
+        button.textContent = 'Copied';
+        setTimeout(() => { button.textContent = text; }, 1500);
+      });
+    }
+  </script>`);
 }
 
 export function notFound() {
