@@ -1,0 +1,189 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import http from 'node:http';
+import crypto from 'node:crypto';
+import { createApp } from '../src/server.js';
+import { PaylinkStore } from '../src/store.js';
+import { createGlobalPayments } from '../src/providers/globalPayments.js';
+import { createOpenPayd } from '../src/providers/openpayd.js';
+
+const listen = (server) => new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve(`http://127.0.0.1:${server.address().port}`)));
+
+function baseConfig(extra = {}) {
+  return {
+    port: 0, publicUrl: 'http://pay.test', allowedOrigins: ['http://shop.test'], mode: 'mock',
+    storeFile: null, store: new PaylinkStore(null), apiKey: 'k_test', ...extra,
+  };
+}
+
+async function startApp(extra) {
+  const app = createApp(baseConfig(extra));
+  const url = await listen(app.server);
+  return { ...app, url, close: () => app.server.close() };
+}
+
+const auth = { Authorization: 'Bearer k_test', 'Content-Type': 'application/json' };
+
+test('creates a paylink and pays it by card in mock mode', async (t) => {
+  const app = await startApp();
+  t.after(app.close);
+
+  const res = await fetch(`${app.url}/api/paylinks`, {
+    method: 'POST', headers: auth,
+    body: JSON.stringify({ amount: 4999, currency: 'gbp', reference: 'ORDER-1', description: 'Order 1' }),
+  });
+  assert.equal(res.status, 201);
+  const link = await res.json();
+  assert.match(link.id, /^pl_/);
+  assert.equal(link.url, `http://pay.test/pay/${link.id}`);
+  assert.equal(link.currency, 'GBP');
+  assert.deepEqual(link.methods, ['card', 'bank']);
+
+  const page = await fetch(`${app.url}/pay/${link.id}`);
+  const body = await page.text();
+  assert.match(body, /£49\.99/);
+  assert.match(body, /Pay by card/);
+  assert.match(body, /Pay by bank/);
+
+  const start = await fetch(`${app.url}/pay/${link.id}/card`, { method: 'POST', redirect: 'manual' });
+  assert.equal(start.status, 303);
+  assert.equal(start.headers.get('location'), `http://pay.test/mock/card/${link.id}`);
+
+  await fetch(`${app.url}/mock/card/${link.id}/paid`, { method: 'POST', redirect: 'manual' });
+  const status = await (await fetch(`${app.url}/pay/${link.id}/status`)).json();
+  assert.deepEqual(status, { id: link.id, status: 'paid', paidWith: 'globalpayments' });
+  await assert.rejects(app.service.startPayment(link.id, 'bank'), /paylink is paid/);
+});
+
+test('rejects bad input and missing API key', async (t) => {
+  const app = await startApp();
+  t.after(app.close);
+  const post = (body, headers = auth) => fetch(`${app.url}/api/paylinks`, { method: 'POST', headers, body: JSON.stringify(body) });
+
+  assert.equal((await post({ amount: 10, currency: 'GBP', reference: 'R1' }, { 'Content-Type': 'application/json' })).status, 401);
+  assert.equal((await post({ amount: 12.5, currency: 'GBP', reference: 'R1' })).status, 400);
+  assert.equal((await post({ amount: 100, currency: 'JPY', reference: 'R1' })).status, 400);
+  assert.equal((await post({ amount: 100, currency: 'GBP', reference: 'has space' })).status, 400);
+  assert.equal((await post({ amount: 100, currency: 'GBP', reference: 'R1', returnUrl: 'javascript:alert(1)' })).status, 400);
+  assert.equal((await post({ amount: 100, currency: 'GBP', reference: 'R1' })).status, 201);
+  assert.equal((await post({ amount: 100, currency: 'GBP', reference: 'R1' })).status, 400, 'duplicate reference');
+});
+
+test('CORS allows only configured origins', async (t) => {
+  const app = await startApp();
+  t.after(app.close);
+  const ok = await fetch(`${app.url}/api/paylinks`, { method: 'OPTIONS', headers: { Origin: 'http://shop.test' } });
+  assert.equal(ok.headers.get('access-control-allow-origin'), 'http://shop.test');
+  const no = await fetch(`${app.url}/api/paylinks`, { method: 'OPTIONS', headers: { Origin: 'http://evil.test' } });
+  assert.equal(no.headers.get('access-control-allow-origin'), null);
+});
+
+test('expired links cannot be paid', async () => {
+  let now = new Date('2026-01-01T00:00:00Z');
+  const app = createApp(baseConfig());
+  app.service.now = () => now;
+  const link = app.service.create({ amount: 100, currency: 'EUR', reference: 'EXP', expiresInHours: 1 });
+  now = new Date('2026-01-01T02:00:00Z');
+  await assert.rejects(app.service.startPayment(link.id, 'card'), /expired/);
+});
+
+// --- Provider adapters against a fake provider API ---
+
+function fakeProvider(handler) {
+  const calls = [];
+  const server = http.createServer((req, res) => {
+    let raw = '';
+    req.on('data', (c) => { raw += c; });
+    req.on('end', () => {
+      const call = { method: req.method, url: req.url, headers: req.headers, body: raw ? JSON.parse(raw) : null };
+      calls.push(call);
+      const [status, data] = handler(call);
+      res.writeHead(status, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(data));
+    });
+  });
+  return { server, calls };
+}
+
+test('Global Payments adapter: access token then Pay by Link', async (t) => {
+  const fake = fakeProvider((call) => {
+    if (call.url === '/ucp/accesstoken') return [200, { token: 'gp_tok', seconds_to_expire: 600 }];
+    if (call.url === '/ucp/links') return [200, { id: 'LNK_1', url: 'https://pay.gp.test/LNK_1', status: 'ACTIVE' }];
+    return [404, {}];
+  });
+  const base = await listen(fake.server);
+  t.after(() => fake.server.close());
+
+  const gp = createGlobalPayments({ baseUrl: `${base}/ucp`, appId: 'app', appKey: 'key', apiVersion: '2021-03-22', accountName: 'transaction_processing', channel: 'CNP', country: 'GB' });
+  const paylink = { id: 'pl_1', reference: 'ORDER-9', amount: 1999, currency: 'GBP', description: 'Shoes', expiresAt: '2026-12-01T00:00:00.000Z' };
+  const result = await gp.createLink(paylink, { returnUrl: 'r', cancelUrl: 'c', webhookUrl: 'w' });
+  assert.deepEqual(result, { providerId: 'LNK_1', url: 'https://pay.gp.test/LNK_1', status: 'ACTIVE' });
+
+  const [tokenCall, linkCall] = fake.calls;
+  assert.equal(tokenCall.body.app_id, 'app');
+  assert.equal(tokenCall.body.secret, crypto.createHash('sha512').update(tokenCall.body.nonce + 'key').digest('hex'));
+  assert.equal(linkCall.headers.authorization, 'Bearer gp_tok');
+  assert.equal(linkCall.headers['x-gp-version'], '2021-03-22');
+  assert.equal(linkCall.body.transactions.amount, '1999');
+  assert.equal(linkCall.body.transactions.currency, 'GBP');
+  assert.deepEqual(linkCall.body.transactions.allowed_payment_methods, ['CARD']);
+  assert.equal(linkCall.body.notifications.status_url, 'w');
+
+  const raw = JSON.stringify({ status: 'CAPTURED' });
+  const sig = crypto.createHash('sha512').update(raw + 'key').digest('hex');
+  assert.equal(gp.verifyWebhook(raw, { 'x-gp-signature': sig }), true);
+  assert.equal(gp.verifyWebhook(raw, { 'x-gp-signature': 'nope' }), false);
+});
+
+test('OpenPayd adapter: OAuth token then PayIn', async (t) => {
+  const fake = fakeProvider((call) => {
+    if (call.url.startsWith('/api/oauth/token')) return [200, { access_token: 'op_tok', expires_in: 300, accountHolderId: 'AH-1' }];
+    if (call.url === '/api/transactions/open-banking/payins') return [201, { id: 'PI_1', status: 'PENDING', authorisationUrl: 'https://bank.test/auth' }];
+    return [404, {}];
+  });
+  const base = await listen(fake.server);
+  t.after(() => fake.server.close());
+
+  const op = createOpenPayd({ baseUrl: base, username: 'u', password: 'p', accountId: 'ACC-1', tokenPath: '/api/oauth/token', payinPath: '/api/transactions/open-banking/payins' });
+  const result = await op.createPayIn({ reference: 'ORDER-9', amount: 1999, currency: 'EUR', customer: { name: 'Ada' } }, { returnUrl: 'r', webhookUrl: 'w' });
+  assert.deepEqual(result, { providerId: 'PI_1', url: 'https://bank.test/auth', status: 'PENDING' });
+
+  const [tokenCall, payinCall] = fake.calls;
+  assert.equal(tokenCall.url, '/api/oauth/token?grant_type=client_credentials');
+  assert.equal(tokenCall.headers.authorization, `Basic ${Buffer.from('u:p').toString('base64')}`);
+  assert.equal(payinCall.headers.authorization, 'Bearer op_tok');
+  assert.equal(payinCall.headers['x-account-holder-id'], 'AH-1');
+  assert.deepEqual(payinCall.body.amount, { value: '19.99', currency: 'EUR' });
+  assert.equal(payinCall.body.accountId, 'ACC-1');
+});
+
+test('webhooks update paylink status in live wiring', async (t) => {
+  const appKey = 'gp_key';
+  const providers = {
+    globalPayments: { ...createGlobalPayments({ appKey }), createLink: async () => ({ providerId: 'LNK_9', url: 'https://gp/x' }) },
+    openpayd: {
+      ...createOpenPayd({ webhookSecret: '' }),
+      createPayIn: async () => ({ providerId: 'PI_9', url: 'https://bank/x' }),
+      getPayIn: async (id) => ({ id, status: 'COMPLETED', reference: 'B-1' }),
+    },
+  };
+  const app = await startApp({ mode: 'live', providers });
+  t.after(app.close);
+
+  const card = app.service.create({ amount: 500, currency: 'GBP', reference: 'C-1' });
+  await app.service.startPayment(card.id, 'card');
+  const raw = JSON.stringify({ id: 'TRN_1', status: 'CAPTURED', link_data: { id: 'LNK_9' } });
+  const bad = await fetch(`${app.url}/webhooks/globalpayments`, { method: 'POST', body: raw, headers: { 'x-gp-signature': 'x' } });
+  assert.equal(bad.status, 401);
+  const sig = crypto.createHash('sha512').update(raw + appKey).digest('hex');
+  const good = await fetch(`${app.url}/webhooks/globalpayments`, { method: 'POST', body: raw, headers: { 'x-gp-signature': sig } });
+  assert.deepEqual(await good.json(), { received: true, matched: true });
+  assert.equal(app.service.get(card.id).status, 'paid');
+
+  // OpenPayd without a shared secret: the body's status is ignored and the PayIn is re-read.
+  const bank = app.service.create({ amount: 500, currency: 'GBP', reference: 'B-1' });
+  await app.service.startPayment(bank.id, 'bank');
+  const res = await fetch(`${app.url}/webhooks/openpayd`, { method: 'POST', body: JSON.stringify({ id: 'PI_9', status: 'FAILED' }) });
+  assert.deepEqual(await res.json(), { received: true, matched: true });
+  assert.equal(app.service.get(bank.id).status, 'paid');
+});

@@ -1,0 +1,14 @@
+{
+  "name": "trvst-pay",
+  "version": "0.1.0",
+  "description": "TRVST PAY paylink service: one link, paid by card (Global Payments Pay by Link) or by bank (OpenPayd PayIn).",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test test/*.test.js"
+  }
+}

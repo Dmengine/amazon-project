@@ -3,6 +3,7 @@ import {getProduct} from '../../data/products.js';
 import {getDeliveryOption} from '../../data/deliveryOptions.js';
 import {formatCurrency} from '../utils/money.js';
 import {addOrder} from '../../data/orders.js';
+import {createPaylink} from '../utils/trvstPay.js';
 
 export function renderPaymentSummary() {
   let productPriceCents = 0;
@@ -64,6 +65,11 @@ export function renderPaymentSummary() {
       js-place-order">
       Place your order
     </button>
+
+    <button class="place-order-button button-secondary
+      js-trvst-pay">
+      Pay with TRVST PAY
+    </button>
   `;
 
   document.querySelector('.js-payment-summary')
@@ -90,5 +96,23 @@ export function renderPaymentSummary() {
       }
 
       window.location.href = 'orders.html';
+    });
+
+  document.querySelector('.js-trvst-pay')
+    .addEventListener('click', async (event) => {
+      const button = event.currentTarget;
+      button.disabled = true;
+      try {
+        const paylink = await createPaylink({
+          amountCents: totalCents,
+          currency: 'USD',
+          reference: `ORDER-${Date.now()}`,
+          description: 'Amazon order'
+        });
+        window.location.href = paylink.url;
+      } catch (error) {
+        button.disabled = false;
+        alert(`Could not start TRVST PAY: ${error.message}`);
+      }
     });
 }
